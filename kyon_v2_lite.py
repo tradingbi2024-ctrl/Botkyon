@@ -654,7 +654,7 @@ import os  # <-- Sube esta línea aquí arriba del bloque
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(CSV_PATH):
-        save_taken()
+        save_taken([])
     print(f"✅ Ejecutando {APP_NAME}")
 
     port = int(os.environ.get("PORT", 5000))
