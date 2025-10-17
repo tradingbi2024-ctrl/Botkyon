@@ -649,9 +649,13 @@ app.add_url_rule("/refresh","refresh",home)
 app.add_url_rule("/take","take_signal",take_signal,methods=["POST"])
 app.add_url_rule("/eval","eval_close",eval_close,methods=["POST"])
 
-if __name__=="__main__":
+import os  # <-- Sube esta línea aquí arriba del bloque
+
+if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(CSV_PATH):
-        save_taken([])
-    print(f"✅ Ejecutando {APP_NAME} en http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000)
+        save_taken()
+    print(f"✅ Ejecutando {APP_NAME}")
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
