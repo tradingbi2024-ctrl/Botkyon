@@ -13,16 +13,30 @@ from PyPDF2 import PdfReader
 # Conexión a API real de mercado (TwelveData)
 # ---------------------------------------------
 def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=50):
+    import datetime as dt
     try:
         api_key = os.getenv("TWELVEDATA_API_KEY")
         if not api_key:
             print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
-        else:
-   	     print(f"✅ Clave API detectada: {api_key[:5]}********")
-        return []    
+            return []
+
+        # Detectar si el mercado Forex está cerrado
+        ahora = dt.datetime.utcnow()
+        es_fin_de_semana = ahora.weekday() >= 5  # 5=sábado, 6=domingo
+        es_forex = not simbolo.startswith("BTC")
+
+        if es_forex and es_fin_de_semana:
+            print(f"⚠️ Mercado cerrado ({simbolo}). Esperando próxima sesión.")
+            return [{
+                "datetime": str(ahora),
+                "open": 0, "high": 0, "low": 0, "close": 0, "volume": 0
+            }]
+
+        # Si no está cerrado, conectar a Twelve Data
         url = f"https://api.twelvedata.com/time_series?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
         r = requests.get(url, timeout=10)
         datos = r.json()
+
         if "values" in datos:
             velas = [{
                 "datetime": v["datetime"],
@@ -30,14 +44,14 @@ def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=50):
                 "high": float(v["high"]),
                 "low": float(v["low"]),
                 "close": float(v["close"]),
-                "volume": float(v["volume"])
+                "volume": float(v["volume"]),
             } for v in datos["values"]]
             return velas[::-1]
         else:
-            print("Error API:", datos.get("message", "Error desconocido"))
+            print("❌ Error API:", datos.get("message", "Respuesta desconocida"))
             return []
     except Exception as e:
-        print("Error al conectar con Twelve Data:", e)
+        print("❌ Error conectando a Twelve Data:", e)
         return []
 
 # ---------------------------------------------
