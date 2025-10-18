@@ -1,3 +1,4 @@
+#pylint:disable= 'expected an indented block after 'if' statement on line 271 (kyon_v2_lite, line 272)'
 # -*- coding: utf-8 -*-
 # KYON v2 Lite - Web (Flask)
 # Versión estable con conexión a TwelveData, lectura de PDFs, memoria y análisis estadístico
@@ -12,61 +13,135 @@ from PyPDF2 import PdfReader
 # ---------------------------------------------
 # Conexión a API real de mercado (TwelveData)
 # ---------------------------------------------
-def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=20):
+# -------------------------------------------------------
+# Conexión a API real de mercado (TwelveData)
+# -------------------------------------------------------
+def obtener_datos_reales(simbolo="BTC/USD",intervalo="15min",limite=50):
     import datetime as dt
-    try:
-        api_key = os.getenv("TWELVEDATA_API_KEY")
-        if not api_key:
-            print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
-            return []
+    import requests
 
-        # Formatear símbolo correctamente (ej: EUR/USD)
-        if not "/" in simbolo and len(simbolo) == 6:
-            simbolo = simbolo[:3] + "/" + simbolo[3:]
+    # ✅ Clave directa para Pydroid (evita variables de entorno)
+    api_key = "1d9ec4d09cbc4085b55188ddd5d7cbbb"
 
-        # Detectar si el mercado Forex está cerrado (sábado o domingo)
-        ahora = dt.datetime.utcnow()
-        es_fin_de_semana = ahora.weekday() >= 5
-        es_forex = not simbolo.startswith("BTC")
-
-        if es_forex and es_fin_de_semana:
-            print(f"⚠️ Mercado cerrado ({simbolo}). Esperando próxima sesión.")
-            return [{
-                "datetime": str(ahora),
-                "open": 0, "high": 0, "low": 0, "close": 0, "volume": 0
-            }]
-
-        # Solicitud a TwelveData
-        url = f"https://api.twelvedata.com/time_series?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
-        r = requests.get(url, timeout=10)
-        datos = r.json()
-
-        if "values" in datos:
-            velas = [
-                {
-                    "datetime": v.get("datetime"),
-                    "open": float(v.get("open", 0)),
-                    "high": float(v.get("high", 0)),
-                    "low": float(v.get("low", 0)),
-                    "close": float(v.get("close", 0)),
-                    "volume": float(v.get("volume", 0))
-                }
-                for v in datos["values"]
-            ]
-            return velas[::-1]
-
-        elif "status" in datos and datos["status"] != "ok":
-            print(f"❌ Error API: {datos.get('message', 'Error desconocido')}")
-            return []
-
-        else:
-            print(f"⚠️ Sin 'values' en respuesta: {datos}")
-            return []
-
-    except Exception as e:
-        print("❌ Error al conectar con Twelve Data:", e)
+    if not api_key:
+        print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
         return []
 
+    # Corregir formato del símbolo para Twelve Data
+    if not "/" in simbolo:
+        simbolo = simbolo[:3] + "/" + simbolo[3:]
+
+    # Detectar si el mercado Forex está cerrado
+    ahora = dt.datetime.utcnow()
+    es_fin_de_semana = ahora.weekday() >= 5  # 5 = sábado, 6 = domingo
+    es_forex = not simbolo.startswith("BTC")
+
+    if es_forex and es_fin_de_semana:
+        print(f"⚠️ Mercado cerrado ({simbolo}). Esperando próxima sesión.")
+        return [{
+            "datetime": str(ahora),
+            "open": "0",
+            "high": "0",
+            "low": "0",
+            "close": "0",
+            "volume": "0"
+        }]
+
+    # Si no está cerrado, conecta a Twelve Data
+    url = f"https://api.twelvedata.com/time_series?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
+    print(f"🔍 Consultando datos de {simbolo} ({intervalo})...\n")
+
+    r = requests.get(url, timeout=10)
+    datos = r.json()
+
+    if "values" in datos:
+        print(f"✅ Datos obtenidos de {simbolo} ({len(datos['values'])} velas)")
+    else:
+        print("⚠️ Sin valores en respuesta de API:")
+        print(datos)
+
+    return datos
+
+# ---------------------------------------------------------
+# Análisis técnico avanzado (versión liviana para Pydroid)
+# ---------------------------------------------------------
+def analizar_datos_reales(simbolo="BTC/USD", intervalo="15min", limite=50):
+    print(f"📊 Iniciando análisis para {simbolo} ({intervalo})...")
+    datos = obtener_datos_reales(simbolo, intervalo, limite)
+
+    if not datos or "values" not in datos:
+        print("⚠️ No se pudieron obtener velas del mercado.")
+        return {"direccion": "SIN DATOS", "accion": "Esperando datos válidos"}
+
+    # Invertir las velas (de más antigua a reciente)
+    valores = datos["values"][::-1]
+    closes = [float(v["close"]) for v in valores]
+    highs = [float(v["high"]) for v in valores]
+    lows = [float(v["low"]) for v in valores]
+
+    # ============================
+    # FUNCIONES AUXILIARES
+    # ============================
+
+    # --- EMA ---
+    def ema(data, period):
+        if len(data) < period:
+            return [sum(data) / len(data)]
+        k = 2 / (period + 1)
+        ema_vals = [sum(data[:period]) / period]
+        for price in data[period:]:
+            ema_vals.append(price * k + ema_vals[-1] * (1 - k))
+        return ema_vals
+
+    # --- MACD ---
+    ema12 = ema(closes, 12)
+    ema26 = ema(closes, 26)
+    diff_len = min(len(ema12), len(ema26))
+    macd = [ema12[-diff_len + i] - ema26[i] for i in range(diff_len)]
+    signal = ema(macd, 9)
+
+    # --- ATR (promedio de rango verdadero) ---
+    tr = []
+    for i in range(1, len(highs)):
+        hl = highs[i] - lows[i]
+        hc = abs(highs[i] - closes[i - 1])
+        lc = abs(lows[i] - closes[i - 1])
+        tr.append(max(hl, hc, lc))
+    atr = sum(tr[-10:]) / 10 if len(tr) >= 10 else sum(tr) / len(tr)
+
+    # --- SuperTrend básico ---
+    upperband = (highs[-1] + lows[-1]) / 2 + 3 * atr
+    lowerband = (highs[-1] + lows[-1]) / 2 - 3 * atr
+
+    # ============================
+    # ANÁLISIS FINAL
+    # ============================
+
+    close = closes[-1]
+    macd_val = macd[-1]
+    signal_val = signal[-1]
+
+    if macd_val > signal_val and close > upperband:
+        direccion = "ALCISTA"
+        accion = "Comprar (BUY)"
+    elif macd_val < signal_val and close < lowerband:
+        direccion = "BAJISTA"
+        accion = "Vender (SELL)"
+    else:
+        direccion = "LATERAL"
+        accion = "Esperar"
+
+    resultado = {
+        "simbolo": simbolo,
+        "direccion": direccion,
+        "ultima_candle": round(close, 2),
+        "macd": round(macd_val, 5),
+        "signal": round(signal_val, 5),
+        "accion": accion
+    }
+
+    print(f"✅ Señal generada (simple): {resultado}")
+    return resultado
 # ---------------------------------------------
 # Pares y configuración Yahoo Finance
 # ---------------------------------------------
@@ -145,72 +220,93 @@ def fetch_yahoo(symbol: str, timeframe: str) -> List[Dict[str,Any]]:
 # ---------------------------------------------
 # Indicadores técnicos
 # ---------------------------------------------
-def ema(values: List[float], period: int) -> List[float]:
-    k = 2/(period+1)
-    out = []
-    ema_val = None
-    for v in values:
-        ema_val = v if ema_val is None else (v*k + ema_val*(1-k))
-        out.append(ema_val)
-    return out
+def make_signal(symbol: str, tf: str, tz_disp: str) -> Dict[str, Any]:
+    # 🔁 Si es BTC/USD, usa datos reales de TwelveData
+    if symbol == "BTCUSD":
+        analisis = analizar_datos_reales("BTC/USD", tf, 50)
+        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        show_time = apply_tz(now_utc, tz_disp)
+        return {
+            "id": f"{symbol}-{int(now_utc.timestamp())}",
+            "symbol": symbol,
+            "timeframe": tf,
+            "direction": analisis["direccion"],
+            "entry": analisis["ultima_candle"],
+            "sl": "-",
+            "tp1": "-",
+            "tp2": "-",
+            "rr1": "-",
+            "rr2": "-",
+            "action": analisis["accion"],
+            "signal_time_utc": now_utc.isoformat(),
+            "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
+            "tz": tz_disp,
+            "explain": f"MACD y SuperTrend indican {analisis['direccion']}. {analisis['accion']}.",
+        }
 
-def macd_line(close: List[float]) -> Tuple[List[float], List[float], List[float]]:
-    ema12 = ema(close,12)
-    ema26 = ema(close,26)
-    macd = [a-b for a,b in zip(ema12, ema26)]
-    signal = ema(macd,9)
-    hist = [m-s for m,s in zip(macd, signal)]
-    return macd, signal, hist
+    # 🔁 De lo contrario, usa Yahoo Finance (por compatibilidad)
+    candles = fetch_yahoo(symbol, tf)
+    if len(candles) < 60:
+        return base_card(symbol, tf, "SIN DATOS", tz_disp)
 
-def true_range(h:float,l:float,prev_close:float)->float:
-    return max(h-l, abs(h-prev_close), abs(l-prev_close))
+    closes = [c["c"] for c in candles]
+    macd, sig, hist = macd_line(closes)
+    st = supertrend(candles, period=10, mult=3.0)
+    sweep = liquidity_sweep(candles, lookback=12)
+    last = candles[-1]
+    atr14 = atr(candles, 14)[-1]
+    entry = last["c"]
+    direction = "SIN SEÑAL"
 
-def atr(candles: List[Dict[str,Any]], period:int=14) -> List[float]:
-    out=[]
-    prev_close=None
-    q=[]
-    for c in candles:
-        if prev_close is None:
-            tr=c["h"]-c["l"]
-        else:
-            tr=true_range(c["h"],c["l"],prev_close)
-        q.append(tr)
-        if len(q)>period:
-            q.pop(0)
-        out.append(sum(q)/len(q))
-        prev_close=c["c"]
-    return out
+    # 📊 Condiciones de señal
+    if macd[-1] > sig[-1] and last["c"] > st[-1] and (sweep in ["buy", "none"]):
+        direction = "COMPRA"
+    elif macd[-1] < sig[-1] and last["c"] < st[-1] and (sweep in ["sell", "none"]):
+        direction = "VENTA"
 
-def supertrend(candles: List[Dict[str,Any]], period:int=10, mult:float=3.0)->List[float]:
-    n=len(candles)
-    if n==0:
-        return []
-    highs=[c["h"] for c in candles]
-    lows=[c["l"] for c in candles]
-    closes=[c["c"] for c in candles]
-    atr_vals=atr(candles,period)
-    basic_upper=[]
-    basic_lower=[]
-    for i in range(n):
-        mid=(highs[i]+lows[i])/2
-        r=atr_vals[i]*mult
-        basic_upper.append(mid+r)
-        basic_lower.append(mid-r)
-    final_upper=[basic_upper[0]]
-    final_lower=[basic_lower[0]]
-    trend=[0.0]*n
-    dir_up=True
-    for i in range(1,n):
-        fu = basic_upper[i] if (basic_upper[i]<final_upper[i-1] or closes[i-1]>final_upper[i-1]) else final_upper[i-1]
-        fl = basic_lower[i] if (basic_lower[i]>final_lower[i-1] or closes[i-1]<final_lower[i-1]) else final_lower[i-1]
-        final_upper.append(fu)
-        final_lower.append(fl)
-        if closes[i]>final_upper[i-1]:
-            dir_up=True
-        elif closes[i]<final_lower[i-1]:
-            dir_up=False
-        trend[i]=final_lower[i] if dir_up else final_upper[i]
-    return trend
+    if direction == "SIN SEÑAL":
+        print(f"📊 Sin señal operativa en {symbol}.")
+        return base_card(symbol, tf, "SIN SEÑAL", tz_disp)
+
+    # 📈 Calcular niveles
+    if direction == "COMPRA":
+        sl = round_price(symbol, entry - 1.0 * atr14)
+        tp1 = round_price(symbol, entry + 2.0 * atr14)
+        tp2 = round_price(symbol, entry + 3.0 * atr14)
+    else:  # VENTA
+        sl = round_price(symbol, entry + 1.0 * atr14)
+        tp1 = round_price(symbol, entry - 2.0 * atr14)
+        tp2 = round_price(symbol, entry - 3.0 * atr14)
+
+    action = "ENTRAR AHORA"
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    show_time = apply_tz(now_utc, tz_disp)
+
+    # 🖨 Mostrar señal en consola
+    print(f"✅ Señal generada para {symbol}: {direction}")
+    print(f"   Entrada: {entry}")
+    print(f"   StopLoss: {sl}")
+    print(f"   TakeProfit1 (1:2): {tp1}")
+    print(f"   TakeProfit2 (1:3): {tp2}")
+
+    # 🔁 Retornar estructura final
+    return {
+        "id": f"{symbol}-{int(now_utc.timestamp())}",
+        "symbol": symbol,
+        "timeframe": tf,
+        "direction": direction,
+        "entry": round_price(symbol, entry),
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "rr1": "1:2",
+        "rr2": "1:3",
+        "action": action,
+        "signal_time_utc": now_utc.isoformat(),
+        "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
+        "tz": tz_disp,
+        "explain": f"MACD y SuperTrend indican {direction}.",
+    }
 
 def liquidity_sweep(candles: List[Dict[str,Any]], lookback:int=10)->str:
     if len(candles)<lookback+2:
@@ -876,13 +972,21 @@ if __name__ == "__main__":
     if not os.path.exists(CSV_PATH):
         save_taken([])
 
-    print(f"✅ Ejecutando {APP_NAME}")
+    print(f"✅ Ejecutando {APP_NAME}")	
+    
+    # Prueba directa del análisis al iniciar
+analizar_datos_reales("BTC/USD", "15min", 50)
+
+    # === Prueba directa de conexión a API ===
+obtener_datos_reales()
+
+print("\n🌐 Servidor Flask iniciando... (mantén la app abierta)\n")
 
     # (Opcional) Mostrar autoanálisis al arrancar
-    try:
+try:
         print(analizar_memoria_detallada())
-    except Exception as e:
+except Exception as e:
         print("Nota análisis memoria:", e)
 
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+port = int(os.environ.get("PORT", 5000))
+app.run(host="0.0.0.0", port=port)
