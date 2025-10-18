@@ -19,13 +19,14 @@ def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=20):
         if not api_key:
             print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
             return []
-            # Corregir formato del símbolo para Twelve Data
-        if not "/" in simbolo:
+
+        # Formatear símbolo correctamente (ej: EUR/USD)
+        if not "/" in simbolo and len(simbolo) == 6:
             simbolo = simbolo[:3] + "/" + simbolo[3:]
 
-        # Detectar si el mercado Forex está cerrado
+        # Detectar si el mercado Forex está cerrado (sábado o domingo)
         ahora = dt.datetime.utcnow()
-        es_fin_de_semana = ahora.weekday() >= 5  # 5=sábado, 6=domingo
+        es_fin_de_semana = ahora.weekday() >= 5
         es_forex = not simbolo.startswith("BTC")
 
         if es_forex and es_fin_de_semana:
@@ -35,36 +36,36 @@ def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=20):
                 "open": 0, "high": 0, "low": 0, "close": 0, "volume": 0
             }]
 
-        # Si no está cerrado, conectar a Twelve Data
+        # Solicitud a TwelveData
         url = f"https://api.twelvedata.com/time_series?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
         r = requests.get(url, timeout=10)
         datos = r.json()
 
         if "values" in datos:
-            velas = [{
-                "datetime": v["datetime"],
-                "open": float(v["open"]),
-                "high": float(v["high"]),
-                "low": float(v["low"]),
-                "close": float(v["close"]),
-                "volume": float(v["volume"]),
-            } for v in datos["values"]]
+            velas = [
+                {
+                    "datetime": v.get("datetime"),
+                    "open": float(v.get("open", 0)),
+                    "high": float(v.get("high", 0)),
+                    "low": float(v.get("low", 0)),
+                    "close": float(v.get("close", 0)),
+                    "volume": float(v.get("volume", 0))
+                }
+                for v in datos["values"]
+            ]
             return velas[::-1]
-        else:
-            print("❌ Error API:", datos.get("message", "Respuesta desconocida"))
-            return []
-    except Exception as e:
-        print("❌ Error conectando a Twelve Data:", e)
-        return []
 
-# ---------------------------------------------
-# Configuración general
-# ---------------------------------------------
-APP_NAME = "KYON v2 Lite"
-DATA_DIR = os.path.abspath(os.path.dirname(__file__))
-CSV_PATH = os.path.join(DATA_DIR, "kyon_signals.csv")
-MAX_KEEP_DAYS = 30
-RESULT_WINDOW_HOURS = 48
+        elif "status" in datos and datos["status"] != "ok":
+            print(f"❌ Error API: {datos.get('message', 'Error desconocido')}")
+            return []
+
+        else:
+            print(f"⚠️ Sin 'values' en respuesta: {datos}")
+            return []
+
+    except Exception as e:
+        print("❌ Error al conectar con Twelve Data:", e)
+        return []
 
 # ---------------------------------------------
 # Pares y configuración Yahoo Finance
@@ -867,9 +868,14 @@ app.add_url_rule("/take", "take_signal", take_signal, methods=["POST"])
 app.add_url_rule("/eval", "eval_close", eval_close, methods=["POST"])
 
 if __name__ == "__main__":
+    APP_NAME = "KYON v2 Lite"
+    DATA_DIR = "data"
+    CSV_PATH = os.path.join(DATA_DIR, "kyon_signals.csv")
+
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(CSV_PATH):
         save_taken([])
+
     print(f"✅ Ejecutando {APP_NAME}")
 
     # (Opcional) Mostrar autoanálisis al arrancar
