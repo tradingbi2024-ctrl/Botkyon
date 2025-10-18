@@ -19,6 +19,9 @@ def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=50):
         if not api_key:
             print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
             return []
+            # Corregir formato del símbolo para Twelve Data
+        if not "/" in simbolo:
+            simbolo = simbolo[:3] + "/" + simbolo[3:]
 
         # Detectar si el mercado Forex está cerrado
         ahora = dt.datetime.utcnow()
