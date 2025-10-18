@@ -17,6 +17,8 @@ def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=50):
         api_key = os.getenv("TWELVEDATA_API_KEY")
         if not api_key:
             print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
+            else:
+    print(f"✅ Clave API detectada: {api_key[:5]}********")
             return []
         url = f"https://api.twelvedata.com/time_series?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
         r = requests.get(url, timeout=10)
