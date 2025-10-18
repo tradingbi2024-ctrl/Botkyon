@@ -12,7 +12,7 @@ from PyPDF2 import PdfReader
 # ---------------------------------------------
 # Conexión a API real de mercado (TwelveData)
 # ---------------------------------------------
-def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=50):
+def obtener_datos_reales(simbolo="EUR/USD", intervalo="1min", limite=20):
     import datetime as dt
     try:
         api_key = os.getenv("TWELVEDATA_API_KEY")
