@@ -1,168 +1,56 @@
-#pylint:disable= 'expected an indented block after 'if' statement on line 271 (kyon_v2_lite, line 272)'
 # -*- coding: utf-8 -*-
 # KYON v2 Lite - Web (Flask)
-# Versión estable con conexión a TwelveData, lectura de PDFs, memoria y análisis estadístico
+# Versión híbrida estable: TwelveData (BTC/USD) + Yahoo Finance (resto de pares)
+# Incluye memoria CSV, lectura de PDFs y UI Flask (se agregan en Bloques 2 y 3)
 
-import os, csv, math, time, json, threading
+import os, csv, time, json
+# 🔧 Corrección de importación Flask (Pydroid fix)
+from flask import Flask, render_template_string, request, redirect, url_for, jsonify
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Tuple
 import requests
-from flask import Flask, render_template_string, request, redirect, url_for, jsonify
-from PyPDF2 import PdfReader
 
-# ---------------------------------------------
-# Conexión a API real de mercado (TwelveData)
-# ---------------------------------------------
+# (Bloque 3 importará Flask y PyPDF2 para la UI y PDFs)
+# from flask import Flask, render_template_string, request, redirect, url_for, jsonify
+# from PyPDF2 import PdfReader
+
 # -------------------------------------------------------
-# Conexión a API real de mercado (TwelveData)
+# Configuración base
 # -------------------------------------------------------
-def obtener_datos_reales(simbolo="BTC/USD",intervalo="15min",limite=50):
-    import datetime as dt
-    import requests
+APP_NAME = "KYON v2 Lite"
+DATA_DIR = "data"
+CSV_PATH = os.path.join(DATA_DIR, "kyon_signals.csv")
+MAX_KEEP_DAYS = 30
+RESULT_WINDOW_HOURS = 48
 
-    # ✅ Clave directa para Pydroid (evita variables de entorno)
-    api_key = "1d9ec4d09cbc4085b55188ddd5d7cbbb"
-
-    if not api_key:
-        print("⚠️ No hay clave TWELVEDATA_API_KEY configurada.")
-        return []
-
-    # Corregir formato del símbolo para Twelve Data
-    if not "/" in simbolo:
-        simbolo = simbolo[:3] + "/" + simbolo[3:]
-
-    # Detectar si el mercado Forex está cerrado
-    ahora = dt.datetime.utcnow()
-    es_fin_de_semana = ahora.weekday() >= 5  # 5 = sábado, 6 = domingo
-    es_forex = not simbolo.startswith("BTC")
-
-    if es_forex and es_fin_de_semana:
-        print(f"⚠️ Mercado cerrado ({simbolo}). Esperando próxima sesión.")
-        return [{
-            "datetime": str(ahora),
-            "open": "0",
-            "high": "0",
-            "low": "0",
-            "close": "0",
-            "volume": "0"
-        }]
-
-    # Si no está cerrado, conecta a Twelve Data
-    url = f"https://api.twelvedata.com/time_series?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
-    print(f"🔍 Consultando datos de {simbolo} ({intervalo})...\n")
-
-    r = requests.get(url, timeout=10)
-    datos = r.json()
-
-    if "values" in datos:
-        print(f"✅ Datos obtenidos de {simbolo} ({len(datos['values'])} velas)")
-    else:
-        print("⚠️ Sin valores en respuesta de API:")
-        print(datos)
-
-    return datos
-
-# ---------------------------------------------------------
-# Análisis técnico avanzado (versión liviana para Pydroid)
-# ---------------------------------------------------------
-def analizar_datos_reales(simbolo="BTC/USD", intervalo="15min", limite=50):
-    print(f"📊 Iniciando análisis para {simbolo} ({intervalo})...")
-    datos = obtener_datos_reales(simbolo, intervalo, limite)
-
-    if not datos or "values" not in datos:
-        print("⚠️ No se pudieron obtener velas del mercado.")
-        return {"direccion": "SIN DATOS", "accion": "Esperando datos válidos"}
-
-    # Invertir las velas (de más antigua a reciente)
-    valores = datos["values"][::-1]
-    closes = [float(v["close"]) for v in valores]
-    highs = [float(v["high"]) for v in valores]
-    lows = [float(v["low"]) for v in valores]
-
-    # ============================
-    # FUNCIONES AUXILIARES
-    # ============================
-
-    # --- EMA ---
-    def ema(data, period):
-        if len(data) < period:
-            return [sum(data) / len(data)]
-        k = 2 / (period + 1)
-        ema_vals = [sum(data[:period]) / period]
-        for price in data[period:]:
-            ema_vals.append(price * k + ema_vals[-1] * (1 - k))
-        return ema_vals
-
-    # --- MACD ---
-    ema12 = ema(closes, 12)
-    ema26 = ema(closes, 26)
-    diff_len = min(len(ema12), len(ema26))
-    macd = [ema12[-diff_len + i] - ema26[i] for i in range(diff_len)]
-    signal = ema(macd, 9)
-
-    # --- ATR (promedio de rango verdadero) ---
-    tr = []
-    for i in range(1, len(highs)):
-        hl = highs[i] - lows[i]
-        hc = abs(highs[i] - closes[i - 1])
-        lc = abs(lows[i] - closes[i - 1])
-        tr.append(max(hl, hc, lc))
-    atr = sum(tr[-10:]) / 10 if len(tr) >= 10 else sum(tr) / len(tr)
-
-    # --- SuperTrend básico ---
-    upperband = (highs[-1] + lows[-1]) / 2 + 3 * atr
-    lowerband = (highs[-1] + lows[-1]) / 2 - 3 * atr
-
-    # ============================
-    # ANÁLISIS FINAL
-    # ============================
-
-    close = closes[-1]
-    macd_val = macd[-1]
-    signal_val = signal[-1]
-
-    if macd_val > signal_val and close > upperband:
-        direccion = "ALCISTA"
-        accion = "Comprar (BUY)"
-    elif macd_val < signal_val and close < lowerband:
-        direccion = "BAJISTA"
-        accion = "Vender (SELL)"
-    else:
-        direccion = "LATERAL"
-        accion = "Esperar"
-
-    resultado = {
-        "simbolo": simbolo,
-        "direccion": direccion,
-        "ultima_candle": round(close, 2),
-        "macd": round(macd_val, 5),
-        "signal": round(signal_val, 5),
-        "accion": accion
-    }
-
-    print(f"✅ Señal generada (simple): {resultado}")
-    return resultado
-# ---------------------------------------------
-# Pares y configuración Yahoo Finance
-# ---------------------------------------------
+# -------------------------------------------------------
+# Pares y mapeos Yahoo Finance
+# -------------------------------------------------------
 PAIRS = [
     "EURUSD","GBPUSD","USDJPY","AUDUSD","NZDUSD","USDCAD",
     "USDCHF","XAUUSD","XAGUSD","BTCUSD"
 ]
 YH_TICKER = {
-    "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "JPY=X",
-    "AUDUSD": "AUDUSD=X", "NZDUSD": "NZDUSD=X", "USDCAD": "USDCAD=X",
-    "USDCHF": "USDCHF=X", "XAUUSD": "XAUUSD=X", "XAGUSD": "XAGUSD=X",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "JPY=X",       # se invierte a USDJPY más abajo
+    "AUDUSD": "AUDUSD=X",
+    "NZDUSD": "NZDUSD=X",
+    "USDCAD": "USDCAD=X",
+    "USDCHF": "USDCHF=X",
+    "XAUUSD": "XAUUSD=X",
+    "XAGUSD": "XAGUSD=X",
     "BTCUSD": "BTC-USD"
 }
-INVERT_TICKER = {"USDJPY": "JPY=X"}
+INVERT_TICKER = {"USDJPY": "JPY=X"}  # para USDJPY usamos JPY=X y luego invertimos
+
 TF_ALLOWED = ["5m","15m","1h","4h"]
 YH_INTERVAL = {"5m":"5m","15m":"15m","1h":"60m","4h":"240m"}
-YH_RANGE = {"5m":"7d","15m":"30d","1h":"60d","4h":"730d"}
+YH_RANGE   = {"5m":"7d","15m":"30d","1h":"60d","4h":"730d"}
 
-# ---------------------------------------------
-# Zonas horarias
-# ---------------------------------------------
+# -------------------------------------------------------
+# Zonas horarias (selector simple por offset)
+# -------------------------------------------------------
 TZ_CHOICES = [
     ("UTC-5","-05:00"), ("UTC-4","-04:00"), ("UTC-3","-03:00"),
     ("UTC-2","-02:00"), ("UTC-1","-01:00"), ("UTC","00:00"),
@@ -173,6 +61,7 @@ TZ_CHOICES = [
 ]
 
 def apply_tz(dt_utc: datetime, offset_str: str) -> datetime:
+    """Aplica un offset estilo '+05:00' o '-05:00' a un datetime UTC (naive en salida)."""
     sign = 1 if offset_str.startswith("+") or offset_str.startswith("0") else -1
     hh, mm = offset_str.replace("+","").replace("-","").split(":")
     delta = timedelta(hours=int(hh), minutes=int(mm))
@@ -180,10 +69,14 @@ def apply_tz(dt_utc: datetime, offset_str: str) -> datetime:
         delta = -delta
     return (dt_utc + delta).replace(tzinfo=None)
 
-# ---------------------------------------------
-# Descarga de velas Yahoo Finance
-# ---------------------------------------------
+# -------------------------------------------------------
+# Descarga de velas desde Yahoo Finance (gratis)
+# -------------------------------------------------------
 def fetch_yahoo(symbol: str, timeframe: str) -> List[Dict[str,Any]]:
+    """
+    Retorna lista de velas: [{"time": dt_utc, "o":..., "h":..., "l":..., "c":...}, ...]
+    Usa la API pública de Yahoo Finance para todos los pares.
+    """
     tkr = YH_TICKER.get(symbol, symbol)
     inv = INVERT_TICKER.get(symbol)
     interval = YH_INTERVAL[timeframe]
@@ -200,196 +93,222 @@ def fetch_yahoo(symbol: str, timeframe: str) -> List[Dict[str,Any]]:
         for i in range(len(ts)):
             if any(v is None for v in (O[i],H[i],L[i],C[i])):
                 continue
-            close = float(C[i])
-            open_ = float(O[i])
-            high = float(H[i])
-            low = float(L[i])
-            if inv:
+            close = float(C[i]); open_ = float(O[i]); high = float(H[i]); low = float(L[i])
+            # Si el ticker es invertido (USDJPY vía JPY=X), invertimos OHLC
+            if inv and symbol == "USDJPY":
                 close = 1.0/close
                 open_ = 1.0/open_
-                high = 1.0/low
-                low = 1.0/high
+                # OJO: al invertir, el high/low se cruzan
+                high_inv = 1.0/low
+                low_inv  = 1.0/high
+                high, low = high_inv, low_inv
             candles.append({
                 "time": datetime.fromtimestamp(ts[i], tz=timezone.utc),
                 "o": open_, "h": high, "l": low, "c": close
             })
-        return candles[-600:]
+        return candles[-600:]  # límite de seguridad
     except Exception:
         return []
 
-# ---------------------------------------------
-# Indicadores técnicos
-# ---------------------------------------------
-def make_signal(symbol: str, tf: str, tz_disp: str) -> Dict[str, Any]:
-    # 🔁 Si es BTC/USD, usa datos reales de TwelveData
-    if symbol == "BTCUSD":
-        analisis = analizar_datos_reales("BTC/USD", tf, 50)
-        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-        show_time = apply_tz(now_utc, tz_disp)
-        return {
-            "id": f"{symbol}-{int(now_utc.timestamp())}",
-            "symbol": symbol,
-            "timeframe": tf,
-            "direction": analisis["direccion"],
-            "entry": analisis["ultima_candle"],
-            "sl": "-",
-            "tp1": "-",
-            "tp2": "-",
-            "rr1": "-",
-            "rr2": "-",
-            "action": analisis["accion"],
-            "signal_time_utc": now_utc.isoformat(),
-            "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
-            "tz": tz_disp,
-            "explain": f"MACD y SuperTrend indican {analisis['direccion']}. {analisis['accion']}.",
-        }
+# -------------------------------------------------------
+# Conexión a Twelve Data (solo BTC/USD en plan gratis)
+# -------------------------------------------------------
+def obtener_datos_reales(simbolo: str = "BTC/USD", intervalo: str = "15min", limite: int = 50):
+    """
+    Devuelve el JSON de TwelveData tal cual (con clave embebida).
+    Nota: en plan gratis Forex puede venir vacío o con retraso. BTC funciona mejor.
+    """
+    # ✅ Clave directa incrustada (solicitado por el usuario)
+    api_key = "1d9ec4d09cbc4085b55188ddd5d7cbbb"
 
-    # 🔁 De lo contrario, usa Yahoo Finance (por compatibilidad)
-    candles = fetch_yahoo(symbol, tf)
-    if len(candles) < 60:
-        return base_card(symbol, tf, "SIN DATOS", tz_disp)
+    # Asegurar formato con "/"
+    if "/" not in simbolo and len(simbolo) >= 6:
+        simbolo = simbolo[:3] + "/" + simbolo[3:]
 
-    closes = [c["c"] for c in candles]
-    macd, sig, hist = macd_line(closes)
-    st = supertrend(candles, period=10, mult=3.0)
-    sweep = liquidity_sweep(candles, lookback=12)
-    last = candles[-1]
-    atr14 = atr(candles, 14)[-1]
-    entry = last["c"]
-    direction = "SIN SEÑAL"
+    # Consulta
+    url = (
+        "https://api.twelvedata.com/time_series"
+        f"?symbol={simbolo}&interval={intervalo}&outputsize={limite}&apikey={api_key}"
+    )
+    print(f"🔍 Consultando datos de {simbolo} ({intervalo}) en TwelveData...")
+    try:
+        r = requests.get(url, timeout=12)
+        datos = r.json()
+        if "values" in datos:
+            print(f"✅ TwelveData OK: {simbolo} ({len(datos['values'])} velas)")
+        else:
+            print(f"⚠️ TwelveData sin 'values' para {simbolo}: {datos}")
+        return datos
+    except Exception as e:
+        print("❌ Error TwelveData:", e)
+        return {}
 
-    # 📊 Condiciones de señal
-    if macd[-1] > sig[-1] and last["c"] > st[-1] and (sweep in ["buy", "none"]):
-        direction = "COMPRA"
-    elif macd[-1] < sig[-1] and last["c"] < st[-1] and (sweep in ["sell", "none"]):
-        direction = "VENTA"
+# -------------------------------------------------------
+# Analizador simple para BTC usando TwelveData
+# -------------------------------------------------------
+def analizar_datos_reales(simbolo: str = "BTC/USD", intervalo: str = "15min", limite: int = 50) -> Dict[str,Any]:
+    """
+    Hace un análisis ligero (EMA/MACD/ATR simplificado) para BTC/USD desde TwelveData.
+    Devuelve dict con 'direccion', 'accion' y último precio (para mostrar en la tarjeta).
+    """
+    print(f"📊 Iniciando análisis para {simbolo} ({intervalo})...")
+    datos = obtener_datos_reales(simbolo, intervalo, limite)
 
-    if direction == "SIN SEÑAL":
-        print(f"📊 Sin señal operativa en {symbol}.")
-        return base_card(symbol, tf, "SIN SEÑAL", tz_disp)
+    if not datos or "values" not in datos:
+        print("⚠️ No se pudieron obtener velas del mercado.")
+        return {"direccion": "SIN DATOS", "accion": "Esperando datos válidos", "ultima_candle": "-"}
 
-    # 📈 Calcular niveles
-    if direction == "COMPRA":
-        sl = round_price(symbol, entry - 1.0 * atr14)
-        tp1 = round_price(symbol, entry + 2.0 * atr14)
-        tp2 = round_price(symbol, entry + 3.0 * atr14)
-    else:  # VENTA
-        sl = round_price(symbol, entry + 1.0 * atr14)
-        tp1 = round_price(symbol, entry - 2.0 * atr14)
-        tp2 = round_price(symbol, entry - 3.0 * atr14)
+    # Orden ascendente (del más antiguo al más reciente)
+    valores = datos["values"][::-1]
+    closes = [float(v["close"]) for v in valores]
+    highs  = [float(v["high"])  for v in valores]
+    lows   = [float(v["low"])   for v in valores]
 
-    action = "ENTRAR AHORA"
-    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-    show_time = apply_tz(now_utc, tz_disp)
+    # --- EMA helper ---
+    def ema(data, period):
+        if len(data) < period:
+            return [sum(data)/len(data)]
+        k = 2/(period+1)
+        e = [sum(data[:period])/period]
+        for price in data[period:]:
+            e.append(price*k + e[-1]*(1-k))
+        return e
 
-    # 🖨 Mostrar señal en consola
-    print(f"✅ Señal generada para {symbol}: {direction}")
-    print(f"   Entrada: {entry}")
-    print(f"   StopLoss: {sl}")
-    print(f"   TakeProfit1 (1:2): {tp1}")
-    print(f"   TakeProfit2 (1:3): {tp2}")
+    # --- MACD simplificado ---
+    ema12 = ema(closes, 12)
+    ema26 = ema(closes, 26)
+    L = min(len(ema12), len(ema26))
+    macd = [ema12[-L+i] - ema26[i] for i in range(L)]
+    signal = ema(macd, 9)
 
-    # 🔁 Retornar estructura final
-    return {
-        "id": f"{symbol}-{int(now_utc.timestamp())}",
-        "symbol": symbol,
-        "timeframe": tf,
-        "direction": direction,
-        "entry": round_price(symbol, entry),
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "rr1": "1:2",
-        "rr2": "1:3",
-        "action": action,
-        "signal_time_utc": now_utc.isoformat(),
-        "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
-        "tz": tz_disp,
-        "explain": f"MACD y SuperTrend indican {direction}.",
+    # --- ATR básico ---
+    tr = []
+    for i in range(1, len(highs)):
+        hl = highs[i] - lows[i]
+        hc = abs(highs[i] - closes[i-1])
+        lc = abs(lows[i]  - closes[i-1])
+        tr.append(max(hl, hc, lc))
+    atr = sum(tr[-10:])/10 if len(tr) >= 10 else (sum(tr)/len(tr) if tr else 0.0)
+
+    # --- Supertrend (borde) muy básico: última media±3*ATR ---
+    mid_last = (highs[-1] + lows[-1]) / 2.0
+    upperband = mid_last + 3*atr
+    lowerband = mid_last - 3*atr
+
+    close = closes[-1]
+    macd_v = macd[-1] if macd else 0.0
+    signal_v = signal[-1] if signal else 0.0
+
+    if macd_v > signal_v and close > upperband:
+        direccion = "COMPRA"
+        accion = "ENTRAR AHORA"
+    elif macd_v < signal_v and close < lowerband:
+        direccion = "VENTA"
+        accion = "ENTRAR AHORA"
+    else:
+        direccion = "SIN SEÑAL"
+        accion = "Esperar"
+
+    out = {
+        "simbolo": simbolo,
+        "direccion": direccion,
+        "ultima_candle": round(close, 2),
+        "macd": round(macd_v, 5),
+        "signal": round(signal_v, 5),
+        "accion": accion
     }
+    print(f"✅ Señal (BTC/TwelveData): {out}")
+    return out
 
-def liquidity_sweep(candles: List[Dict[str,Any]], lookback:int=10)->str:
+# -------------------------------------------------------
+# Indicadores (para todos los pares con datos de Yahoo)
+# -------------------------------------------------------
+def ema(values: List[float], period: int) -> List[float]:
+    k = 2/(period+1)
+    out = []
+    ema_val = None
+    for v in values:
+        ema_val = v if ema_val is None else (v*k + ema_val*(1-k))
+        out.append(ema_val)
+    return out
+
+def macd_line(close: List[float]) -> Tuple[List[float], List[float], List[float]]:
+    ema12 = ema(close,12)
+    ema26 = ema(close,26)
+    L = min(len(ema12), len(ema26))
+    macd = [ema12[-L+i] - ema26[i] for i in range(L)]
+    signal = ema(macd,9)
+    hist = [m-s for m,s in zip(macd, signal)]
+    return macd, signal, hist
+
+def true_range(h:float, l:float, prev_close:float) -> float:
+    return max(h-l, abs(h-prev_close), abs(l-prev_close))
+
+def atr(candles: List[Dict[str,Any]], period:int=14) -> List[float]:
+    out=[]; prev_close=None; q=[]
+    for c in candles:
+        if prev_close is None:
+            tr = c["h"] - c["l"]
+        else:
+            tr = true_range(c["h"], c["l"], prev_close)
+        q.append(tr)
+        if len(q) > period:
+            q.pop(0)
+        out.append(sum(q)/len(q))
+        prev_close = c["c"]
+    return out
+
+def supertrend(candles: List[Dict[str,Any]], period:int=10, mult:float=3.0) -> List[float]:
+    n=len(candles)
+    if n==0:
+        return []
+    highs=[c["h"] for c in candles]
+    lows =[c["l"] for c in candles]
+    closes=[c["c"] for c in candles]
+    atr_vals=atr(candles,period)
+    basic_upper=[]; basic_lower=[]
+    for i in range(n):
+        mid=(highs[i]+lows[i])/2
+        r=atr_vals[i]*mult
+        basic_upper.append(mid+r)
+        basic_lower.append(mid-r)
+    final_upper=[basic_upper[0]]; final_lower=[basic_lower[0]]
+    trend=[0.0]*n; dir_up=True
+    for i in range(1,n):
+        fu = basic_upper[i] if (basic_upper[i]<final_upper[i-1] or closes[i-1]>final_upper[i-1]) else final_upper[i-1]
+        fl = basic_lower[i] if (basic_lower[i]>final_lower[i-1] or closes[i-1]<final_lower[i-1]) else final_lower[i-1]
+        final_upper.append(fu); final_lower.append(fl)
+        if closes[i]>final_upper[i-1]: dir_up=True
+        elif closes[i]<final_lower[i-1]: dir_up=False
+        trend[i]=final_lower[i] if dir_up else final_upper[i]
+    return trend
+
+def liquidity_sweep(candles: List[Dict[str,Any]], lookback:int=10) -> str:
+    """Wick que barre alto/bajo previo y cierra de vuelta."""
     if len(candles)<lookback+2:
         return "none"
-    last=candles[-1]
-    prevs=candles[-(lookback+2):-1]
+    last=candles[-1]; prevs=candles[-(lookback+2):-1]
     prev_high=max(p["h"] for p in prevs)
-    prev_low=min(p["l"] for p in prevs)
+    prev_low =min(p["l"] for p in prevs)
     if last["h"]>prev_high and last["c"]<prev_high:
         return "sell"
     if last["l"]<prev_low and last["c"]>prev_low:
         return "buy"
     return "none"
-    # ---------------------------------------------
-# Señales
-# ---------------------------------------------
-def make_signal(symbol: str, tf: str, tz_disp: str) -> Dict[str, Any]:
-    candles = fetch_yahoo(symbol, tf)
-    if len(candles) < 60:
-        return base_card(symbol, tf, "SIN DATOS", tz_disp)
 
-    closes = [c["c"] for c in candles]
-    macd, sig, hist = macd_line(closes)
-    st = supertrend(candles, period=10, mult=3.0)
-    sweep = liquidity_sweep(candles, lookback=12)
-
-    last = candles[-1]
-    atr14 = atr(candles, 14)[-1]
-    direction = "SIN SEÑAL"
-    entry = last["c"]
-
-    # Confluencia:
-    # - MACD>signal y close>SuperTrend y sweep=buy -> COMPRA
-    # - MACD<signal y close<SuperTrend y sweep=sell -> VENTA
-    if macd[-1] > sig[-1] and last["c"] > st[-1] and (sweep in ["buy", "none"]):
-        direction = "COMPRA"
-    if macd[-1] < sig[-1] and last["c"] < st[-1] and (sweep in ["sell", "none"]):
-        direction = "VENTA"
-
-    if direction == "SIN SEÑAL":
-        return base_card(symbol, tf, "SIN SEÑAL", tz_disp)
-
-    # TP/SL por ATR, RR1=1:2, RR2=1:3
-    if direction == "COMPRA":
-        sl = round_price(symbol, entry - 1.0 * atr14)
-        tp1 = round_price(symbol, entry + 2.0 * atr14)
-        tp2 = round_price(symbol, entry + 3.0 * atr14)
-        action = "ENTRAR AHORA"
-    else:
-        sl = round_price(symbol, entry + 1.0 * atr14)
-        tp1 = round_price(symbol, entry - 2.0 * atr14)
-        tp2 = round_price(symbol, entry - 3.0 * atr14)
-        action = "ENTRAR AHORA"
-
-    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-    show_time = apply_tz(now_utc, tz_disp)
-
-    card = {
-        "id": f"{symbol}-{int(now_utc.timestamp())}",
-        "symbol": symbol,
-        "timeframe": tf,
-        "direction": direction,
-        "entry": round_price(symbol, entry),
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "rr1": "1:2",
-        "rr2": "1:3",
-        "action": action,
-        "signal_time_utc": now_utc.isoformat(),
-        "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
-        "tz": tz_disp,
-        "explain": (
-            f"Confluencia: MACD {'>' if macd[-1] > sig[-1] else '<'} señal, "
-            f"precio {'sobre' if last['c'] > st[-1] else 'bajo'} SuperTrend, "
-            f"barrido de liquidez: {sweep}."
-        ),
-    }
-    return card
-
-
+def round_price(symbol:str, p:float)->float:
+    if symbol in ("USDJPY",):
+        return round(p,3)
+    if symbol in ("BTCUSD",):
+        return round(p,2)
+    if symbol in ("XAUUSD","XAGUSD"):
+        return round(p,2)
+    return round(p,5)
+    # -------------------------------------------------------
+# Tarjeta base (cuando no hay señal o faltan datos)
+# -------------------------------------------------------
 def base_card(symbol: str, tf: str, msg: str, tz_disp: str) -> Dict[str, Any]:
-    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    now_utc = datetime.now(timezone.utc)
     show_time = apply_tz(now_utc, tz_disp)
     return {
         "id": f"{symbol}-{int(now_utc.timestamp())}",
@@ -409,20 +328,125 @@ def base_card(symbol: str, tf: str, msg: str, tz_disp: str) -> Dict[str, Any]:
         "explain": "Sin suficientes datos.",
     }
 
+# -------------------------------------------------------
+# Generador de señales (BTC con TwelveData, otros con Yahoo)
+# -------------------------------------------------------
+def make_signal(symbol: str, tf: str, tz_disp: str) -> Dict[str, Any]:
+    # 🟠 Caso especial: BTCUSD → dirección desde TwelveData, ATR/SL/TP desde Yahoo
+    if symbol == "BTCUSD":
+        analisis = analizar_datos_reales("BTC/USD", "15min" if tf == "15m" else tf, 50)  # mapea 15m -> 15min
+        now_utc = datetime.now(timezone.utc)
+        show_time = apply_tz(now_utc, tz_disp)
 
-def round_price(symbol: str, p: float) -> float:
-    # redondeo por tipo (JPY 3 decimales, BTC 2, oro/plata 2, demás 5)
-    if symbol in ("USDJPY",):
-        return round(p, 3)
-    if symbol in ("BTCUSD",):
-        return round(p, 2)
-    if symbol in ("XAUUSD", "XAGUSD"):
-        return round(p, 2)
-    return round(p, 5)
+        # Si no hay señal operativa, muestra tarjeta informativa
+        if analisis.get("direccion") in ("SIN DATOS", "SIN SEÑAL", None):
+            return base_card(symbol, tf, "SIN SEÑAL", tz_disp)
 
-# ---------------------------------------------
+        # Para SL/TP usamos velas de Yahoo (mismo tf) para calcular ATR(14)
+        candles_yh = fetch_yahoo(symbol, tf)
+        if len(candles_yh) < 60:
+            return base_card(symbol, tf, "SIN DATOS", tz_disp)
+
+        last = candles_yh[-1]
+        entry = last["c"]  # tomamos entrada del último cierre de Yahoo para coherencia
+        atr14 = atr(candles_yh, 14)[-1]
+
+        direction = analisis["direccion"]  # "COMPRA" / "VENTA"
+        if direction == "COMPRA":
+            sl  = round_price(symbol, entry - 1.0 * atr14)
+            tp1 = round_price(symbol, entry + 2.0 * atr14)
+            tp2 = round_price(symbol, entry + 3.0 * atr14)
+        else:  # VENTA
+            sl  = round_price(symbol, entry + 1.0 * atr14)
+            tp1 = round_price(symbol, entry - 2.0 * atr14)
+            tp2 = round_price(symbol, entry - 3.0 * atr14)
+
+        card = {
+            "id": f"{symbol}-{int(now_utc.timestamp())}",
+            "symbol": symbol,
+            "timeframe": tf,
+            "direction": direction,
+            "entry": round_price(symbol, entry),
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "rr1": "1:2",
+            "rr2": "1:3",
+            "action": "ENTRAR AHORA",
+            "signal_time_utc": now_utc.isoformat(),
+            "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
+            "tz": tz_disp,
+            "explain": f"MACD + banda (TwelveData) y ATR(14) (Yahoo).",
+        }
+        # Log limpio en consola (sin flechas)
+        print(f"✅ Señal {symbol}: {direction} | Entrada {card['entry']} | SL {sl} | TP1 {tp1} | TP2 {tp2}")
+        return card
+
+    # 🟢 Resto de pares → todo con Yahoo (gratis)
+    candles = fetch_yahoo(symbol, tf)
+    if len(candles) < 60:
+        return base_card(symbol, tf, "SIN DATOS", tz_disp)
+
+    closes = [c["c"] for c in candles]
+    macd, sig, _ = macd_line(closes)
+    st = supertrend(candles, period=10, mult=3.0)
+    sweep = liquidity_sweep(candles, lookback=12)
+
+    last = candles[-1]
+    atr14 = atr(candles, 14)[-1]
+    entry = last["c"]
+    direction = "SIN SEÑAL"
+
+    # Confluencia:
+    # - MACD>signal y close>SuperTrend y sweep=buy -> COMPRA
+    # - MACD<signal y close<SuperTrend y sweep=sell -> VENTA
+    if macd[-1] > sig[-1] and last["c"] > st[-1] and (sweep in ["buy", "none"]):
+        direction = "COMPRA"
+    elif macd[-1] < sig[-1] and last["c"] < st[-1] and (sweep in ["sell", "none"]):
+        direction = "VENTA"
+
+    if direction == "SIN SEÑAL":
+        return base_card(symbol, tf, "SIN SEÑAL", tz_disp)
+
+    if direction == "COMPRA":
+        sl  = round_price(symbol, entry - 1.0 * atr14)
+        tp1 = round_price(symbol, entry + 2.0 * atr14)
+        tp2 = round_price(symbol, entry + 3.0 * atr14)
+    else:  # VENTA
+        sl  = round_price(symbol, entry + 1.0 * atr14)
+        tp1 = round_price(symbol, entry - 2.0 * atr14)
+        tp2 = round_price(symbol, entry - 3.0 * atr14)
+
+    now_utc = datetime.now(timezone.utc)
+    show_time = apply_tz(now_utc, tz_disp)
+
+    card = {
+        "id": f"{symbol}-{int(now_utc.timestamp())}",
+        "symbol": symbol,
+        "timeframe": tf,
+        "direction": direction,
+        "entry": round_price(symbol, entry),
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "rr1": "1:2",
+        "rr2": "1:3",
+        "action": "ENTRAR AHORA",
+        "signal_time_utc": now_utc.isoformat(),
+        "signal_time_show": show_time.strftime("%Y-%m-%d %H:%M"),
+        "tz": tz_disp,
+        "explain": (
+            f"Confluencia: MACD {'>' if macd[-1] > sig[-1] else '<'} señal, "
+            f"precio {'sobre' if last['c'] > st[-1] else 'bajo'} SuperTrend, "
+            f"barrido de liquidez: {sweep}."
+        ),
+    }
+    print(f"✅ Señal {symbol}: {direction} | Entrada {card['entry']} | SL {sl} | TP1 {tp1} | TP2 {tp2}")
+    return card
+
+# -------------------------------------------------------
 # CSV (señales tomadas)
-# ---------------------------------------------
+# -------------------------------------------------------
 CSV_HEADERS = [
     "id","symbol","timeframe","direction","entry","sl","tp1","tp2","rr1","rr2",
     "signal_time_utc","tz","taken","taken_time_utc","result","closed_time_utc","pips"
@@ -437,7 +461,7 @@ def load_taken() -> List[Dict[str, str]]:
         for row in r:
             rows.append(row)
     # limpiar >30 días
-    now = datetime.utcnow().replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     keep = []
     for row in rows:
         t = row.get("taken_time_utc") or row["signal_time_utc"]
@@ -452,6 +476,7 @@ def load_taken() -> List[Dict[str, str]]:
     return keep
 
 def save_taken(rows: List[Dict[str, str]]):
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         w.writeheader()
@@ -464,15 +489,29 @@ def add_taken(card: Dict[str, Any]):
     if any(r["id"] == card["id"] for r in rows):
         return
     rows.append({
-        "id": card["id"], "symbol": card["symbol"], "timeframe": card["timeframe"],
-        "direction": card["direction"], "entry": str(card["entry"]), "sl": str(card["sl"]),
-        "tp1": str(card["tp1"]), "tp2": str(card["tp2"]), "rr1": card["rr1"], "rr2": card["rr2"],
-        "signal_time_utc": card["signal_time_utc"], "tz": card["tz"],
-        "taken": "1", "taken_time_utc": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
-        "result": "ABIERTA", "closed_time_utc": "", "pips": ""
+        "id": card["id"],
+        "symbol": card["symbol"],
+        "timeframe": card["timeframe"],
+        "direction": card["direction"],
+        "entry": str(card["entry"]),
+        "sl": str(card["sl"]),
+        "tp1": str(card["tp1"]),
+        "tp2": str(card["tp2"]),
+        "rr1": card["rr1"],
+        "rr2": card["rr2"],
+        "signal_time_utc": card["signal_time_utc"],
+        "tz": card["tz"],
+        "taken": "1",
+        "taken_time_utc": datetime.now(timezone.utc).isoformat(),
+        "result": "ABIERTA",
+        "closed_time_utc": "",
+        "pips": ""
     })
     save_taken(rows)
 
+# -------------------------------------------------------
+# Evaluación de cierres y utilidades
+# -------------------------------------------------------
 def pip_value(symbol: str) -> float:
     # tamaño del pip (no monetario), solo para conteo de pips
     if symbol in ("USDJPY",):
@@ -480,6 +519,13 @@ def pip_value(symbol: str) -> float:
     if symbol in ("XAUUSD","XAGUSD","BTCUSD"):
         return 0.1
     return 0.0001
+
+def current_price(symbol: str) -> float | None:
+    # último cierre de Yahoo (intervalo 5m) para evaluar rápidamente
+    candles = fetch_yahoo(symbol, "5m")
+    if not candles:
+        return None
+    return candles[-1]["c"]
 
 def evaluate_open_positions():
     rows = load_taken()
@@ -491,9 +537,12 @@ def evaluate_open_positions():
         price_now = current_price(symbol)
         if price_now is None:
             continue
-        entry = float(r["entry"]); sl = float(r["sl"]); tp1 = float(r["tp1"])
-        # evaluar cruce hacia TP1 o SL
-        res = None
+
+        entry = float(r["entry"])
+        sl    = float(r["sl"])
+        tp1   = float(r["tp1"])
+        res   = None
+
         if r["direction"] == "COMPRA":
             if price_now >= tp1: res = "GANADORA"
             elif price_now <= sl: res = "PERDEDORA"
@@ -503,31 +552,19 @@ def evaluate_open_positions():
 
         if res:
             r["result"] = res
-            r["closed_time_utc"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-            # Guardar memoria práctica
-            guardar_memoria_mercado(symbol, r["timeframe"], r["direction"], res, r["result"])
+            r["closed_time_utc"] = datetime.now(timezone.utc).isoformat()
             # pips:
             pipsize = pip_value(symbol)
-            if res == "GANADORA":
-                pips = abs(tp1 - entry) / pipsize
-            else:
-                pips = abs(sl - entry) / pipsize
+            pips = abs((tp1 if res == "GANADORA" else sl) - entry) / pipsize
             r["pips"] = str(round(pips, 1))
             changed = True
 
     if changed:
         save_taken(rows)
 
-def current_price(symbol: str) -> float | None:
-    # último cierre de Yahoo (intervalo 5m) para evaluar rápidamente
-    candles = fetch_yahoo(symbol, "5m")
-    if not candles:
-        return None
-    return candles[-1]["c"]
-
 def recent_stats_48h() -> Dict[str, int]:
     rows = load_taken()
-    now = datetime.utcnow().replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     wins = 0; loss = 0; open_ = 0
     for r in rows:
         try:
@@ -541,29 +578,11 @@ def recent_stats_48h() -> Dict[str, int]:
         elif st == "PERDEDORA": loss += 1
         else: open_ += 1
     return {"wins": wins, "loss": loss, "open": open_}
-
-# ---------------------------------------------
-# KYON: respuesta explicativa (con conocimiento PDF)
-# ---------------------------------------------
-def kyon_explain(card: Dict[str, Any]) -> str:
-    # Usa el conocimiento cargado desde los PDFs
-    respuesta = ""
-    for nombre, contenido in memoria_conocimiento.items():
-        if any(palabra in contenido.lower() for palabra in ["estructura", "liquidez", "confirmación", "entrada", "stop", "tp"]):
-            respuesta += f"\n📘 Según {nombre}: el documento trata conceptos clave aplicables a esta señal."
-            break
-
-    return (
-        f"Hola, soy KYON. Para {card['symbol']} en {card['timeframe']} detecté: "
-        f"{card['explain']} Usé MACD(12,26,9), SuperTrend(10,3) y un chequeo de liquidez "
-        f"simple (barrido de altos/bajos recientes). SL y TPs se basan en ATR(14). "
-        f"RR mínimos: {card['rr1']} y {card['rr2']}. Recuerda validar con tu plan de trading."
-        + respuesta
-    )
-
-# ---------------------------------------------
+    # -------------------------------------------------------
 # Lectura de PDFs de conocimiento
-# ---------------------------------------------
+# -------------------------------------------------------
+from PyPDF2 import PdfReader
+
 def cargar_pdf_conocimiento(ruta_pdf: str) -> str:
     try:
         reader = PdfReader(ruta_pdf)
@@ -593,16 +612,17 @@ def inicializar_conocimiento() -> Dict[str, str]:
 
 memoria_conocimiento = inicializar_conocimiento()
 
-# ---------------------------------------------
-# MEMORIA DE MERCADO (aprendizaje adaptativo)
-# ---------------------------------------------
+# -------------------------------------------------------
+# Memoria de mercado (aprendizaje adaptativo)
+# -------------------------------------------------------
 def guardar_memoria_mercado(simbolo: str, timeframe: str, direction: str, resultado: str, explicacion: str):
     """
-    Guarda cada análisis y resultado en memoria_mercado.csv para aprendizaje futuro.
+    Guarda cada análisis/resultado en memoria_mercado.csv para consulta futura.
     """
-    fecha = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    fecha = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     ruta = os.path.join(DATA_DIR, "memoria_mercado.csv")
     existe = os.path.exists(ruta)
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(ruta, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not existe:
@@ -610,11 +630,8 @@ def guardar_memoria_mercado(simbolo: str, timeframe: str, direction: str, result
         writer.writerow([fecha, simbolo, timeframe, direction, resultado, explicacion])
 
 def cargar_memoria_mercado() -> List[Dict[str, str]]:
-    """
-    Carga la memoria previa para consultar estadísticas o patrones pasados.
-    """
     ruta = os.path.join(DATA_DIR, "memoria_mercado.csv")
-    historial = []
+    historial: List[Dict[str, str]] = []
     if os.path.exists(ruta):
         with open(ruta, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -623,9 +640,6 @@ def cargar_memoria_mercado() -> List[Dict[str, str]]:
     return historial
 
 def resumen_memoria() -> str:
-    """
-    Devuelve un resumen de aciertos y errores históricos.
-    """
     memoria = cargar_memoria_mercado()
     if not memoria:
         return "Aún no hay historial de operaciones registradas."
@@ -633,13 +647,7 @@ def resumen_memoria() -> str:
     losses = sum(1 for m in memoria if m["resultado"] == "PERDEDORA")
     return f"📈 Historial: {wins} ganadoras · {losses} perdedoras · Total: {len(memoria)} análisis"
 
-# ---------------------------------------------
-# ANÁLISIS ESTADÍSTICO DE LA MEMORIA
-# ---------------------------------------------
 def analizar_memoria_detallada() -> str:
-    """
-    Analiza la memoria de mercado y genera un resumen con estadísticas útiles.
-    """
     registros = cargar_memoria_mercado()
     if not registros:
         return "No hay datos suficientes aún."
@@ -647,12 +655,10 @@ def analizar_memoria_detallada() -> str:
     total = len(registros)
     ganadoras = [r for r in registros if r["resultado"] == "GANADORA"]
     perdedoras = [r for r in registros if r["resultado"] == "PERDEDORA"]
-
-    # Ratio de acierto
     winrate = (len(ganadoras) / total * 100) if total else 0.0
 
-    # PARES más rentables
-    pares = {}
+    # Ranking de pares
+    pares: Dict[str, Dict[str, int]] = {}
     for r in registros:
         par = r["simbolo"]
         pares.setdefault(par, {"ganadas": 0, "perdidas": 0})
@@ -660,15 +666,13 @@ def analizar_memoria_detallada() -> str:
             pares[par]["ganadas"] += 1
         elif r["resultado"] == "PERDEDORA":
             pares[par]["perdidas"] += 1
-
     ranking_pares = sorted(
         [(p, v["ganadas"], v["perdidas"]) for p, v in pares.items()],
-        key=lambda x: x[1],
-        reverse=True
+        key=lambda x: x[1], reverse=True
     )
 
-    # TEMPORALIDADES
-    tfs = {}
+    # Ranking de temporalidades
+    tfs: Dict[str, Dict[str, int]] = {}
     for r in registros:
         tf = r["timeframe"]
         tfs.setdefault(tf, {"ganadas": 0, "perdidas": 0})
@@ -676,11 +680,9 @@ def analizar_memoria_detallada() -> str:
             tfs[tf]["ganadas"] += 1
         elif r["resultado"] == "PERDEDORA":
             tfs[tf]["perdidas"] += 1
-
     ranking_tf = sorted(
         [(t, v["ganadas"], v["perdidas"]) for t, v in tfs.items()],
-        key=lambda x: x[1],
-        reverse=True
+        key=lambda x: x[1], reverse=True
     )
 
     resumen = (
@@ -692,7 +694,6 @@ def analizar_memoria_detallada() -> str:
         f"Winrate: {winrate:.1f}%\n\n"
         f"💱 Mejores pares:\n"
     )
-
     for p, g, l in ranking_pares[:5]:
         resumen += f"• {p}: {g} ganadas / {l} perdidas\n"
 
@@ -702,9 +703,27 @@ def analizar_memoria_detallada() -> str:
 
     return resumen
 
-# ---------------------------------------------
+# -------------------------------------------------------
+# Explicación de KYON usando PDFs
+# -------------------------------------------------------
+def kyon_explain(card: Dict[str, Any]) -> str:
+    pista = ""
+    for nombre, contenido in memoria_conocimiento.items():
+        if any(pal in (contenido or "").lower() for pal in ["estructura", "liquidez", "confirmación", "entrada", "stop", "tp"]):
+            pista = f"\n📘 Según {nombre}: conceptos aplicables a esta señal."
+            break
+
+    return (
+        f"Hola, soy KYON. Para {card['symbol']} en {card['timeframe']} detecté: "
+        f"{card['explain']} SL/TP calculados con ATR(14). "
+        f"RR mínimos: {card.get('rr1','-')} y {card.get('rr2','-')}. "
+        f"Valida con tu plan de trading."
+        + pista
+    )
+
+# -------------------------------------------------------
 # Flask (UI)
-# ---------------------------------------------
+# -------------------------------------------------------
 app = Flask(__name__)
 
 HTML = """
@@ -785,7 +804,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-appl
   <div class="panel">
     {% for c in cards %}
     <div class="card">
-      <h3>{{c.symbol}} · {{c.timeframe}} 
+      <h3>{{c.symbol}} · {{c.timeframe}}
         <span class="badge">{% if c.direction in ['COMPRA','VENTA'] %}SEÑAL{% else %}{{c.direction}}{% endif %}</span>
       </h3>
       <div class="kpi">
@@ -823,7 +842,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-appl
       <div>Abiertas:</div><div>{{stats.open}}</div>
     </div>
     <div class="sep"></div>
-    <small>Solo se guardan señales <b>Tomadas</b> por el usuario (máx 30 días, CSV).</small>
+    <small>Solo se guardan señales <b>Tomadas</b> (máx 30 días, CSV).</small>
     <div class="sep"></div>
     <form method="post" action="{{url_for('eval_close')}}">
       <button class="btn" type="submit">Evaluar cierres</button>
@@ -854,7 +873,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-appl
 </div>
 
 <script>
-function setPair(p){ 
+function setPair(p){
   const tf=document.getElementById('tf').value;
   const tz=document.getElementById('tz').value;
   const auto=document.getElementById('auto').value;
@@ -891,17 +910,22 @@ async function ask(id){
 </html>
 """
 
-# cache simple en memoria (para la vista actual)
+# -------------------------------------------------------
+# Cache simple para la vista actual
+# -------------------------------------------------------
 CACHE = {"cards": [], "args": {}}
 
 def build_cards(pair: str, tf: str, tz: str) -> List[Dict[str, Any]]:
-    cards = []
+    cards: List[Dict[str, Any]] = []
     targets = PAIRS if pair in ("", "all", None) else [pair]
     for p in targets:
         cards.append(make_signal(p, tf, tz))
         time.sleep(0.15)  # amable con Yahoo
     return cards
 
+# -------------------------------------------------------
+# Rutas Flask
+# -------------------------------------------------------
 @app.route("/")
 def home():
     pair = request.args.get("pair", "all")
@@ -911,7 +935,6 @@ def home():
     tz = request.args.get("tz", "00:00")
     auto = request.args.get("auto", "off")
 
-    # cards (recalcula si cambian args)
     args = {"pair": pair, "tf": tf, "tz": tz}
     if CACHE["args"] == args and CACHE["cards"]:
         cards = CACHE["cards"]
@@ -922,12 +945,21 @@ def home():
 
     stats = recent_stats_48h()
     taken = load_taken()
-    last_update = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    last_update = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return render_template_string(
         HTML,
-        app_name=APP_NAME, pairs=PAIRS, tf_allowed=TF_ALLOWED,
-        tf=tf, tz=tz, tz_choices=TZ_CHOICES, cards=cards, stats=stats,
-        taken=taken, last_update=last_update, active=pair, auto=auto
+        app_name=APP_NAME,
+        pairs=PAIRS,
+        tf_allowed=TF_ALLOWED,
+        tf=tf,
+        tz=tz,
+        tz_choices=TZ_CHOICES,
+        cards=cards,
+        stats=stats,
+        taken=taken,
+        last_update=last_update,
+        active=pair,
+        auto=auto
     )
 
 @app.post("/take")
@@ -935,16 +967,17 @@ def take_signal():
     payload = request.form.get("payload")
     card = json.loads(payload)
     add_taken(card)
-    return redirect(url_for("home", pair=request.args.get("pair","all"),
+    return redirect(url_for("home",
+                            pair=request.args.get("pair","all"),
                             tf=request.args.get("tf","15m"),
                             tz=request.args.get("tz","00:00"),
                             auto=request.args.get("auto","off")))
 
 @app.post("/eval")
 def eval_close():
-    # evalúa cierres y regresa a home
     evaluate_open_positions()
-    return redirect(url_for("home", pair=request.args.get("pair","all"),
+    return redirect(url_for("home",
+                            pair=request.args.get("pair","all"),
                             tf=request.args.get("tf","15m"),
                             tz=request.args.get("tz","00:00"),
                             auto=request.args.get("auto","off")))
@@ -952,41 +985,40 @@ def eval_close():
 @app.get("/kyon_explain")
 def kyon_explain_api():
     id_ = request.args.get("id")
-    # busca la card en cache
     for c in CACHE.get("cards", []):
         if c["id"] == id_:
             return jsonify({"answer": kyon_explain(c)})
     return jsonify({"answer": "No encontré la señal en pantalla. Actualiza y vuelve a intentar."})
 
-# alias rutas
+# Alias rutas (opcionales)
 app.add_url_rule("/refresh", "refresh", home)
 app.add_url_rule("/take", "take_signal", take_signal, methods=["POST"])
 app.add_url_rule("/eval", "eval_close", eval_close, methods=["POST"])
 
+# -------------------------------------------------------
+# Arranque
+# -------------------------------------------------------
 if __name__ == "__main__":
-    APP_NAME = "KYON v2 Lite"
-    DATA_DIR = "data"
-    CSV_PATH = os.path.join(DATA_DIR, "kyon_signals.csv")
+    APP_NAME = globals().get("APP_NAME", "KYON v2 Lite")
+    DATA_DIR = globals().get("DATA_DIR", "data")
+    CSV_PATH = globals().get("CSV_PATH", os.path.join(DATA_DIR, "kyon_signals.csv"))
 
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(CSV_PATH):
         save_taken([])
 
-    print(f"✅ Ejecutando {APP_NAME}")	
-    
-    # Prueba directa del análisis al iniciar
-analizar_datos_reales("BTC/USD", "15min", 50)
+    print(f"✅ Ejecutando {APP_NAME}")
+    # Prueba directa (no bloquea si falla)
+    try:
+        analizar_datos_reales("BTC/USD", "15min", 50)
+    except Exception as e:
+        print("Nota análisis TwelveData:", e)
 
-    # === Prueba directa de conexión a API ===
-obtener_datos_reales()
-
-print("\n🌐 Servidor Flask iniciando... (mantén la app abierta)\n")
-
-    # (Opcional) Mostrar autoanálisis al arrancar
-try:
+    print("\n🌐 Servidor Flask iniciando... (mantén la app abierta)\n")
+    try:
         print(analizar_memoria_detallada())
-except Exception as e:
+    except Exception as e:
         print("Nota análisis memoria:", e)
 
-port = int(os.environ.get("PORT", 5000))
-app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
